@@ -7,7 +7,7 @@
   <style>
     body { margin: 0; padding: 0; font-family: 'Comic Sans MS', cursive, sans-serif; background: linear-gradient(135deg, #FFDEE9 0%, #B5FFFC 100%); height: 100vh; }
     #container { display: flex; height: 100%; }
-    #game { flex: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: auto; }
+    #game { flex: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: auto; position: relative; }
     #gallery { flex: 1; padding: 16px; box-sizing: border-box; background: rgba(255,255,255,0.8); overflow-y: auto; }
     #gallery h2 { margin-top: 0; font-size: 1.2rem; text-align: center; }
     .thumb { width: 100%; margin-bottom: 12px; border: 2px solid #ccc; border-radius: 8px; }
@@ -19,6 +19,9 @@
     #fireworks { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
     .firework { position: absolute; font-size: 24px; animation: pop 1s ease-out forwards; }
     @keyframes pop { 0% { opacity: 1; transform: scale(0); } 50% { opacity: 1; transform: scale(1.5); } 100% { opacity: 0; transform: scale(2); } }
+    #overlay { position: absolute; top:0; left:0; width:100%; height:100%; background: rgba(255,255,255,0.7); display:flex; align-items:center; justify-content:center; font-size:2rem; color:#333; visibility:hidden; cursor:pointer; }
+    .feedback { position: absolute; top: 50%; left: 50%; font-size: 3rem; transform: translate(-50%, -50%) scale(0); opacity: 1; pointer-events: none; animation: feedbackAnim 0.8s ease-out forwards; }
+    @keyframes feedbackAnim { 0% {opacity:1; transform: translate(-50%, -50%) scale(0);} 50% {opacity:1; transform: translate(-50%, -50%) scale(1.5);} 100% {opacity:0; transform: translate(-50%, -50%) scale(2);} }
   </style>
 </head>
 <body>
@@ -27,6 +30,7 @@
       <canvas id="pictureCanvas" width="500" height="400"></canvas>
       <div id="question">Cargando...</div>
       <div id="choices"></div>
+      <div id="overlay">Toca para continuar</div>
     </div>
     <div id="gallery">
       <h2>Tu galería</h2>
@@ -43,110 +47,148 @@
       { factors:2, ops:['+','-'], count:4, min:1, max:9, maxResult:20 },
       { factors:3, ops:['+','-'], count:4, min:1, max:9, maxResult:20 }
     ];
-    const totalPieces=20;
-    let levelIndex=0, questionsThisLevel=0, pieceCount=0;
+    const totalPieces = 20;
+    let levelIndex = 0, questionsThisLevel = 0, pieceCount = 0;
 
-    // Función genérica de dibujo basada en semilla
+    // Seeds para 30 imágenes
+    const seeds = Array.from({length:30}, (_,i)=>i);
+    let chosenSeed;
+    const offCanvas = document.createElement('canvas'); offCanvas.width=500; offCanvas.height=400;
+    const offCtx = offCanvas.getContext('2d');
+    const galleryKey = 'mathgame_gallery';
+
+    // Sonido de éxito
+    const successSound = new Audio('success.mp3');
+
+    // Dibujo genérico con semilla
     function drawGeneric(ctx, seed, w=500, h=400) {
-      // fondo
       ctx.fillStyle = ['#FFE4E1','#E6E6FA','#E0FFFF','#F0FFF0','#FFF5EE','#F5F5DC'][seed%6];
       ctx.fillRect(0,0,w,h);
-      // formas
       for(let i=0;i<seed%5+3;i++){
-        ctx.fillStyle = ['#FF7F50','#FFD700','#ADFF2F','#00FA9A','#00BFFF','#DA70D6'][ (seed+i)%6 ];
+        ctx.fillStyle = ['#FF7F50','#FFD700','#ADFF2F','#00FA9A','#00BFFF','#DA70D6'][(seed+i)%6];
         const size = 20 + ((seed+i)*7)%60;
-        const x = (seed*13 + i*37)% (w-size);
-        const y = (seed*17 + i*23)% (h-size);
+        const x = (seed*13 + i*37)%(w-size);
+        const y = (seed*17 + i*23)%(h-size);
         if(i%3===0) ctx.fillRect(x,y,size,size);
-        else ctx.beginPath(), ctx.arc(x,y,size/2,0,2*Math.PI), ctx.fill();
+        else { ctx.beginPath(); ctx.arc(x,y,size/2,0,2*Math.PI); ctx.fill(); }
       }
     }
 
-    // Generar array de 30 dibujantes
-    const imageDrawers = Array.from({length:30},(_,i)=>(ctx)=>drawGeneric(ctx,i));
-    const offCanvas = document.createElement('canvas'); offCanvas.width=500; offCanvas.height=400;
-    const offCtx = offCanvas.getContext('2d');
-    // Índice de dibujo elegido
-    const chosenIndex = Math.floor(Math.random()*imageDrawers.length);
-    imageDrawers[chosenIndex](offCtx);
-
-    const canvas=document.getElementById('pictureCanvas'), pCtx=canvas.getContext('2d');
-    const galleryKey='mathgame_gallery';
-
-    function loadGallery(){
-      const data=JSON.parse(localStorage.getItem(galleryKey)||'[]');
-      return data;
+    // Feedback visual
+    function successFeedback() {
+      const fb = document.createElement('div'); fb.className='feedback'; fb.textContent='✔️';
+      gameDiv.appendChild(fb);
+      setTimeout(()=>fb.remove(),800);
     }
-    function saveGallery(arr){
-      localStorage.setItem(galleryKey, JSON.stringify(arr));
+    function failureFeedback() {
+      const fb = document.createElement('div'); fb.className='feedback'; fb.textContent='❌';
+      gameDiv.appendChild(fb);
+      setTimeout(()=>fb.remove(),800);
     }
+
+    // Galería
+    function loadGallery(){ return JSON.parse(localStorage.getItem(galleryKey)||'[]'); }
+    function saveGallery(arr){ localStorage.setItem(galleryKey, JSON.stringify(arr)); }
     function renderGallery(){
-      const thumbs=document.getElementById('thumbs'); thumbs.innerHTML='';
-      loadGallery().forEach(idx=>{
-        const tc=document.createElement('canvas'); tc.width=100; tc.height=80; tc.className='thumb';
-        const tcCtx=tc.getContext('2d'); imageDrawers[idx](tcCtx, idx,100,80);
+      const thumbs = document.getElementById('thumbs'); thumbs.innerHTML = '';
+      loadGallery().forEach(seed=>{
+        const tc = document.createElement('canvas'); tc.width=100; tc.height=80; tc.className='thumb';
+        const tcCtx = tc.getContext('2d'); drawGeneric(tcCtx, seed, 100, 80);
         thumbs.appendChild(tc);
       });
     }
 
-    function drawPieces(){ pCtx.clearRect(0,0,500,400);
-      const cols=5,rows=4,w=500/cols,h=400/rows;
-      for(let i=0;i<pieceCount;i++){ const col=i%cols, row=Math.floor(i/cols);
-        pCtx.drawImage(offCanvas,col*w,row*h,w,h,col*w,row*h,w,h);
+    const canvas = document.getElementById('pictureCanvas'), pCtx = canvas.getContext('2d');
+    const gameDiv = document.getElementById('game');
+    const overlay = document.getElementById('overlay');
+
+    function initImage(){
+      chosenSeed = seeds[Math.floor(Math.random()*seeds.length)];
+      drawGeneric(offCtx, chosenSeed);
+    }
+
+    function drawPieces(){
+      pCtx.clearRect(0,0,500,400);
+      const cols=5, rows=4, w=500/cols, h=400/rows;
+      for(let i=0;i<pieceCount;i++){
+        const col=i%cols, row=Math.floor(i/cols);
+        pCtx.drawImage(offCanvas, col*w, row*h, w, h, col*w, row*h, w, h);
       }
     }
 
     function generateQuestion(){
       if(questionsThisLevel>=levels[levelIndex].count && levelIndex<levels.length-1){ levelIndex++; questionsThisLevel=0; }
       questionsThisLevel++;
-      const lvl=levels[levelIndex]; let nums,ops,result;
+      const lvl = levels[levelIndex]; let nums, ops, result;
       do{
         nums=Array.from({length:lvl.factors},()=>Math.floor(Math.random()*(lvl.max-lvl.min+1))+lvl.min);
-        ops=nums.slice(1).map(()=>lvl.ops[Math.floor(Math.random()*lvl.ops.length)]);
-        result=nums[0];
+        ops = nums.slice(1).map(()=>lvl.ops[Math.floor(Math.random()*lvl.ops.length)]);
+        result = nums[0];
         for(let i=1;i<nums.length;i++){
-          result=ops[i-1]==='+'? result+nums[i]: result-nums[i];
+          result = ops[i-1]==='+'? result+nums[i]: result-nums[i];
           if(result<1||result>lvl.maxResult) break;
         }
-      }while(result<1||result>lvl.maxResult);
-      let text=`${nums[0]}`; ops.forEach((o,i)=>text+=` ${o} ${nums[i+1]}`);
-      return {text:`${text} = ?`, answer: result};
+      } while(result<1||result>lvl.maxResult);
+      let text = `${nums[0]}`;
+      ops.forEach((o,i)=> text += ` ${o} ${nums[i+1]}`);
+      return { text: `${text} = ?`, answer: result };
     }
 
     function showQuestion(){
-      const q=generateQuestion(); document.getElementById('question').textContent=q.text;
-      const cd=document.getElementById('choices'); cd.innerHTML=''; const corr=q.answer;
-      const opts=new Set([corr]);
-      while(opts.size<4){ const delta=Math.floor(Math.random()*7)-3, val=corr+delta;
+      overlay.style.visibility = 'hidden';
+      const q = generateQuestion();
+      document.getElementById('question').textContent = q.text;
+      const cd = document.getElementById('choices'); cd.innerHTML = '';
+      const corr = q.answer;
+      const opts = new Set([corr]);
+      while(opts.size<4){ const delta = Math.floor(Math.random()*7)-3, val = corr+delta;
         if(val>0&&val<=20&&val!==corr) opts.add(val);
       }
       [...opts].sort(()=>Math.random()-0.5).forEach(opt=>{
         const btn=document.createElement('button'); btn.className='choice-btn'; btn.textContent=opt;
-        btn.onclick=()=>checkAnswer(opt,corr); cd.appendChild(btn);
+        btn.onclick=()=>checkAnswer(opt,corr);
+        cd.appendChild(btn);
       });
     }
 
-    function checkAnswer(sel,corr){
-      pieceCount=sel===corr?Math.min(pieceCount+1,totalPieces):Math.max(pieceCount-1,0);
-      drawPieces(); if(pieceCount>=totalPieces) return victory();
-      setTimeout(showQuestion,500);
+    function checkAnswer(sel, corr){
+      if(sel===corr){
+        successSound.play();
+        successFeedback();
+        pieceCount = Math.min(pieceCount+1, totalPieces);
+      } else {
+        failureFeedback();
+        pieceCount = Math.max(pieceCount-1, 0);
+      }
+      drawPieces();
+      if(pieceCount>=totalPieces) return victory();
+      setTimeout(showQuestion, 500);
     }
 
     function victory(){
-      // guardar en galería si nuevo
-      const gal=loadGallery(); if(!gal.includes(chosenIndex)){ gal.push(chosenIndex); saveGallery(gal); renderGallery(); }
-      // efectos
+      const gal = loadGallery();
+      if(!gal.includes(chosenSeed)){
+        gal.push(chosenSeed); saveGallery(gal); renderGallery();
+      }
       const ctxA=new (AudioContext||webkitAudioContext)(), o=ctxA.createOscillator(), g=ctxA.createGain();
       o.connect(g); g.connect(ctxA.destination); o.frequency.value=440; o.start(); o.stop(ctxA.currentTime+0.5);
       for(let i=0;i<30;i++){ const f=document.getElementById('fireworks'); const s=document.createElement('span');
         s.className='firework'; s.textContent='🎆'; s.style.top=Math.random()*100+'%'; s.style.left=Math.random()*100+'%';
         f.appendChild(s); setTimeout(()=>s.remove(),1000);
       }
-      document.getElementById('question').textContent='¡Felicidades!'; document.getElementById('choices').innerHTML='';
+      document.getElementById('question').textContent='¡Felicidades!';
+      document.getElementById('choices').innerHTML='';
+      overlay.style.visibility = 'visible'; overlay.onclick = restartGame;
     }
 
-    // inicio
-    renderGallery(); drawPieces(); showQuestion();
+    function restartGame(){
+      levelIndex=0; questionsThisLevel=0; pieceCount=0;
+      document.getElementById('fireworks').innerHTML='';
+      initImage(); drawPieces(); showQuestion();
+    }
+
+    // Inicio
+    renderGallery(); initImage(); drawPieces(); showQuestion();
   </script>
 </body>
 </html>
